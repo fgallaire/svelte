@@ -388,7 +388,7 @@ function build_element_spread_attributes(
  * @param {AST.RegularElement | AST.SvelteElement} element
  * @param {ComponentContext} context
  * @param {(expression: Expression, metadata: ExpressionMetadata) => Expression} transform
- * @returns {[ObjectExpression,Literal | undefined, ObjectExpression | undefined, ObjectExpression | undefined, Literal | undefined]}
+ * @returns {[ObjectExpression,Literal | undefined, ObjectExpression | undefined, ArrayExpression | ObjectExpression | undefined, Literal | undefined]}
  */
 export function prepare_element_spread_object(element, context, transform) {
 	/** @type {Array<AST.Attribute | AST.SpreadAttribute | AST.BindDirective>} */
@@ -430,7 +430,7 @@ export function prepare_element_spread_object(element, context, transform) {
  * @param {AST.ClassDirective[]} class_directives
  * @param {ComponentContext} context
  * @param {(expression: Expression, metadata: ExpressionMetadata) => Expression} transform
- * @returns {[ObjectExpression,Literal | undefined, ObjectExpression | undefined, ObjectExpression | undefined, Literal | undefined]}
+ * @returns {[ObjectExpression,Literal | undefined, ObjectExpression | undefined, ArrayExpression | ObjectExpression | undefined, Literal | undefined]}
  */
 export function prepare_element_spread(
 	element,
@@ -442,8 +442,6 @@ export function prepare_element_spread(
 ) {
 	/** @type {ObjectExpression | undefined} */
 	let classes;
-	/** @type {ObjectExpression | undefined} */
-	let styles;
 	let flags = 0;
 
 	if (class_directives.length) {
@@ -462,17 +460,7 @@ export function prepare_element_spread(
 		classes = b.object(properties);
 	}
 
-	if (style_directives.length > 0) {
-		const properties = style_directives.map((directive) =>
-			b.init(
-				directive.name,
-				directive.value === true
-					? b.id(directive.name)
-					: build_attribute_value(directive.value, context, transform, true)
-			)
-		);
-		styles = b.object(properties);
-	}
+	const styles = build_style_directives(style_directives, context, transform);
 
 	if (element.metadata.svg || element.metadata.mathml) {
 		flags |= ELEMENT_IS_NAMESPACED | ELEMENT_PRESERVE_ATTRIBUTE_CASE;
@@ -539,38 +527,49 @@ function build_attr_class(class_directives, expression, context, hash, transform
  * @param {(expression: Expression, metadata: ExpressionMetadata) => Expression} transform
  */
 function build_attr_style(style_directives, expression, context, transform) {
-	/** @type {ArrayExpression | ObjectExpression | undefined} */
-	let directives;
+	return b.call(
+		'$.attr_style',
+		expression,
+		build_style_directives(style_directives, context, transform)
+	);
+}
 
-	if (style_directives.length) {
-		let normal_properties = [];
-		let important_properties = [];
+/**
+ * The style directives of an element, as `$.attr_style` and `$.attributes` read them:
+ * an object, or a pair of objects when some are `important`
+ * @param {AST.StyleDirective[]} style_directives
+ * @param {ComponentContext} context
+ * @param {(expression: Expression, metadata: ExpressionMetadata) => Expression} transform
+ * @returns {ArrayExpression | ObjectExpression | undefined}
+ */
+function build_style_directives(style_directives, context, transform) {
+	if (style_directives.length === 0) return;
 
-		for (const directive of style_directives) {
-			const expression =
-				directive.value === true
-					? b.id(directive.name)
-					: build_attribute_value(directive.value, context, transform, true);
+	let normal_properties = [];
+	let important_properties = [];
 
-			let name = directive.name;
-			if (name[0] !== '-' || name[1] !== '-') {
-				name = name.toLowerCase();
-			}
+	for (const directive of style_directives) {
+		const expression =
+			directive.value === true
+				? b.id(directive.name)
+				: build_attribute_value(directive.value, context, transform, true);
 
-			const property = b.init(name, expression);
-			if (directive.modifiers.includes('important')) {
-				important_properties.push(property);
-			} else {
-				normal_properties.push(property);
-			}
+		let name = directive.name;
+		if (name[0] !== '-' || name[1] !== '-') {
+			name = name.toLowerCase();
 		}
 
-		if (important_properties.length) {
-			directives = b.array([b.object(normal_properties), b.object(important_properties)]);
+		const property = b.init(name, expression);
+		if (directive.modifiers.includes('important')) {
+			important_properties.push(property);
 		} else {
-			directives = b.object(normal_properties);
+			normal_properties.push(property);
 		}
 	}
 
-	return b.call('$.attr_style', expression, directives);
+	if (important_properties.length) {
+		return b.array([b.object(normal_properties), b.object(important_properties)]);
+	}
+
+	return b.object(normal_properties);
 }
