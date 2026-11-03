@@ -126,7 +126,52 @@ const pending = new Set();
 
 /**
  * @param {HTMLInputElement[]} inputs
- * @param {null | [number]} group_index
+ * @param {null | number[]} indexes
+ * @returns {HTMLInputElement[]}
+ */
+function find_binding_group(inputs, indexes) {
+	var binding_group = inputs;
+
+	if (indexes !== null) {
+		for (var index of indexes) {
+			// @ts-expect-error
+			binding_group = binding_group[index] ??= [];
+		}
+	}
+
+	return binding_group;
+}
+
+/**
+ * @param {HTMLInputElement[]} binding_group
+ * @param {HTMLInputElement} input
+ */
+function remove_from_binding_group(binding_group, input) {
+	var index = binding_group.indexOf(input);
+
+	if (index !== -1) {
+		binding_group.splice(index, 1);
+	}
+}
+
+/**
+ * @param {HTMLInputElement[]} binding_group
+ */
+function sort_binding_group(binding_group) {
+	if (!pending.has(binding_group)) {
+		pending.add(binding_group);
+
+		queue_micro_task(() => {
+			// necessary to maintain binding group order in all insertion scenarios
+			binding_group.sort((a, b) => (a.compareDocumentPosition(b) === 4 ? -1 : 1));
+			pending.delete(binding_group);
+		});
+	}
+}
+
+/**
+ * @param {HTMLInputElement[]} inputs
+ * @param {null | number[] | (() => number[])} group_index
  * @param {HTMLInputElement} input
  * @param {() => unknown} get
  * @param {(value: unknown) => void} set
@@ -134,19 +179,31 @@ const pending = new Set();
  */
 export function bind_group(inputs, group_index, input, get, set = get) {
 	var is_checkbox = input.getAttribute('type') === 'checkbox';
-	var binding_group = inputs;
+	var binding_group = find_binding_group(
+		inputs,
+		typeof group_index === 'function' ? untrack(group_index) : group_index
+	);
 
 	// needs to be let or related code isn't treeshaken out if it's always false
 	let hydration_mismatch = false;
 
-	if (group_index !== null) {
-		for (var index of group_index) {
-			// @ts-expect-error
-			binding_group = binding_group[index] ??= [];
-		}
-	}
-
 	binding_group.push(input);
+
+	if (typeof group_index === 'function') {
+		// the index of an item in a keyed `{#each}` changes as the item moves: the input
+		// joins the group of its new index, instead of staying in the group of the item
+		// that is now at its old one
+		render_effect(() => {
+			var group = find_binding_group(inputs, group_index());
+
+			if (group !== binding_group) {
+				remove_from_binding_group(binding_group, input);
+				binding_group = group;
+				binding_group.push(input);
+				sort_binding_group(binding_group);
+			}
+		});
+	}
 
 	listen_to_event_and_reset_event(
 		input,
@@ -186,22 +243,10 @@ export function bind_group(inputs, group_index, input, get, set = get) {
 	});
 
 	teardown(() => {
-		var index = binding_group.indexOf(input);
-
-		if (index !== -1) {
-			binding_group.splice(index, 1);
-		}
+		remove_from_binding_group(binding_group, input);
 	});
 
-	if (!pending.has(binding_group)) {
-		pending.add(binding_group);
-
-		queue_micro_task(() => {
-			// necessary to maintain binding group order in all insertion scenarios
-			binding_group.sort((a, b) => (a.compareDocumentPosition(b) === 4 ? -1 : 1));
-			pending.delete(binding_group);
-		});
-	}
+	sort_binding_group(binding_group);
 
 	queue_micro_task(() => {
 		if (hydration_mismatch) {
